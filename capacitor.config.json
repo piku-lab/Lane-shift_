@@ -1,0 +1,9 @@
+{
+  "appId": "com.laneshift.game",
+  "appName": "Lane Shift",
+  "webDir": "www",
+  "bundledWebRuntime": false,
+  "android": {
+    "allowMixedContent": false
+  }
+}
