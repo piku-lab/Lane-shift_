@@ -1434,6 +1434,12 @@ const AD_IDS = {
   rewarded: 'ca-app-pub-7707996192916400/9237303092',
 };
 let adsInitialized = false;
+// Becomes true only after the Google User Messaging Platform (UMP) consent
+// flow finishes AND says ads may actually be requested. Google's SDK gates
+// every ad request on this — skipping it is the #1 reason showBanner /
+// showInterstitial / showRewardVideoAd silently do nothing on a real device
+// even though the plugin is installed correctly.
+let adsCanRequest = false;
 function getAdMob(){
   return (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AdMob) || null;
 }
@@ -1448,24 +1454,37 @@ async function initAds(retriesLeft){
     return;
   }
   if(adsInitialized) return;
+  adsInitialized = true;
   try{
-    // Real ad unit IDs are now in use — initializeForTesting is deliberately
-    // NOT set, since that flag would force test ads no matter what ID is
-    // passed. IMPORTANT: don't repeatedly tap/click your own live ads while
-    // testing the build — AdMob treats that as invalid traffic and can
-    // suspend your account. If you need to test the actual ad flow safely,
-    // add your device as a test device: AdMob.initialize({ testingDevices: ['YOUR_DEVICE_ID'] }).
+    // Step 1 — consent (required before any ad request). requestConsentInfo()
+    // asks Google whether this user/region needs a consent prompt; if so we
+    // show it, then only proceed if canRequestAds comes back true.
+    let consentInfo = await AdMob.requestConsentInfo();
+    if(consentInfo.isConsentFormAvailable && consentInfo.status === 'REQUIRED'){
+      consentInfo = await AdMob.showConsentForm();
+    }
+    adsCanRequest = !!consentInfo.canRequestAds;
+    if(!adsCanRequest){
+      // User is in a region that requires consent and hasn't granted it —
+      // respect that. Game just plays ad-free this session.
+      return;
+    }
+    // Real ad unit IDs are in use — isTesting is deliberately NOT set on the
+    // per-ad options, since that flag would force test creatives no matter
+    // what ID is passed. IMPORTANT: don't repeatedly tap/click your own live
+    // ads while testing the build — AdMob treats that as invalid traffic and
+    // can suspend your account. To test the real ad flow safely, add your
+    // device as a test device via AdMob.requestConsentInfo({ testDeviceIdentifiers: ['YOUR_DEVICE_ID'] }).
     await AdMob.initialize({});
-    adsInitialized = true;
     AdMob.prepareInterstitial({ adId: AD_IDS.interstitial }).catch(()=>{});
     AdMob.prepareRewardVideoAd({ adId: AD_IDS.rewarded }).catch(()=>{});
   }catch(e){ /* ads unavailable this session — game plays fine without them */ }
 }
 async function showBannerAd(){
-  if(state.adsRemoved) return;
+  if(state.adsRemoved || !adsCanRequest) return;
   const AdMob = getAdMob();
   if(!AdMob) return;
-  try{ await AdMob.showBanner({ adId: AD_IDS.banner, adSize:'BANNER', position:'BOTTOM_CENTER' }); }catch(e){}
+  try{ await AdMob.showBanner({ adId: AD_IDS.banner, adSize:'ADAPTIVE_BANNER', position:'BOTTOM_CENTER' }); }catch(e){}
 }
 async function hideBannerAd(){
   const AdMob = getAdMob();
@@ -1473,33 +1492,38 @@ async function hideBannerAd(){
   try{ await AdMob.hideBanner(); }catch(e){}
 }
 async function showInterstitialAd(){
-  if(state.adsRemoved) return;
+  if(state.adsRemoved || !adsCanRequest) return;
   const AdMob = getAdMob();
   if(!AdMob) return;
   try{
     await AdMob.showInterstitial();
+  }catch(e){
+    /* not loaded yet / no fill — just skip this time, no need to bother the player */
+  }finally{
     AdMob.prepareInterstitial({ adId: AD_IDS.interstitial }).catch(()=>{});
-  }catch(e){}
+  }
 }
-function showRewardedAd(onReward){
+async function showRewardedAd(onReward){
   const AdMob = getAdMob();
-  if(!AdMob){
-    // no ad plugin found — either running in the browser preview (expected),
-    // or running in the native app but the AdMob plugin failed to register
-    // (not expected — check Settings > AD DIAGNOSTICS if this fires inside
-    // the actual installed app rather than a browser tab).
-    flashHUD('NO AD PLUGIN — TEST REWARD GRANTED');
+  if(!AdMob || !adsCanRequest){
+    // No ad plugin (browser preview), or ads aren't permitted yet (consent
+    // not granted, or still initializing) — don't block the player on
+    // something that can't happen; grant the reward directly.
+    flashHUD(AdMob ? 'ADS UNAVAILABLE — REWARD GRANTED' : 'NO AD PLUGIN — TEST REWARD GRANTED');
     onReward();
     return;
   }
-  let rewarded = false;
-  const rewardListener = AdMob.addListener('onRewardedVideoAdReward', ()=>{ rewarded = true; });
-  const closeListener = AdMob.addListener('onRewardedVideoAdClosed', ()=>{
-    rewardListener.remove(); closeListener.remove();
-    if(rewarded) onReward(); else flashHUD('AD SKIPPED — NO REWARD');
+  try{
+    // showRewardVideoAd() resolves only once the user actually earns the
+    // reward (current plugin API — no separate listener dance needed), and
+    // rejects if the ad wasn't ready or was dismissed before completion.
+    await AdMob.showRewardVideoAd();
+    onReward();
+  }catch(e){
+    flashHUD('AD NOT READY — TRY AGAIN');
+  }finally{
     AdMob.prepareRewardVideoAd({ adId: AD_IDS.rewarded }).catch(()=>{});
-  });
-  AdMob.showRewardVideoAd().catch(()=>{ flashHUD('AD NOT READY — TRY AGAIN'); rewardListener.remove(); closeListener.remove(); });
+  }
 }
 function purchaseRemoveAds(){
   // NOTE: this is a stub, same as the coin/gem packs — it flips the flag
@@ -1530,6 +1554,11 @@ function getAdDebugInfo(){
     }
   }
   lines.push('adsInitialized flag: ' + adsInitialized);
+  lines.push('adsCanRequest (consent granted): ' + adsCanRequest);
+  if(adsInitialized && !adsCanRequest){
+    lines.push('--> Consent flow ran but did NOT grant ad permission.');
+    lines.push('    This is why nothing shows: Google blocks all ad requests until consent is granted.');
+  }
   return lines.join('\n');
 }
 

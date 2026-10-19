@@ -8,11 +8,11 @@
     "open:android": "cap open android"
   },
   "dependencies": {
-    "@capacitor/core": "^6.1.2",
-    "@capacitor/android": "^6.1.2",
-    "@capacitor-community/admob": "^6.1.0"
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/android": "^8.5.0",
+    "@capacitor-community/admob": "^8.2.1"
   },
   "devDependencies": {
-    "@capacitor/cli": "^6.1.2"
+    "@capacitor/cli": "^8.5.0"
   }
 }
