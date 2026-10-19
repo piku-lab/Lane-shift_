@@ -1440,6 +1440,10 @@ let adsInitialized = false;
 // showInterstitial / showRewardVideoAd silently do nothing on a real device
 // even though the plugin is installed correctly.
 let adsCanRequest = false;
+// Raw debug trail for the consent flow — filled in as initAds runs, surfaced
+// verbatim in AD DIAGNOSTICS so we can see exactly what Google returned
+// instead of guessing from a single true/false.
+const adsDebugTrail = [];
 function getAdMob(){
   return (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AdMob) || null;
 }
@@ -1459,9 +1463,22 @@ async function initAds(retriesLeft){
     // Step 1 — consent (required before any ad request). requestConsentInfo()
     // asks Google whether this user/region needs a consent prompt; if so we
     // show it, then only proceed if canRequestAds comes back true.
-    let consentInfo = await AdMob.requestConsentInfo();
+    let consentInfo;
+    try{
+      consentInfo = await AdMob.requestConsentInfo();
+      adsDebugTrail.push('requestConsentInfo() -> ' + JSON.stringify(consentInfo));
+    }catch(e){
+      adsDebugTrail.push('requestConsentInfo() THREW: ' + (e && e.message ? e.message : JSON.stringify(e)));
+      throw e;
+    }
     if(consentInfo.isConsentFormAvailable && consentInfo.status === 'REQUIRED'){
-      consentInfo = await AdMob.showConsentForm();
+      try{
+        consentInfo = await AdMob.showConsentForm();
+        adsDebugTrail.push('showConsentForm() -> ' + JSON.stringify(consentInfo));
+      }catch(e){
+        adsDebugTrail.push('showConsentForm() THREW: ' + (e && e.message ? e.message : JSON.stringify(e)));
+        throw e;
+      }
     }
     adsCanRequest = !!consentInfo.canRequestAds;
     if(!adsCanRequest){
@@ -1478,7 +1495,9 @@ async function initAds(retriesLeft){
     await AdMob.initialize({});
     AdMob.prepareInterstitial({ adId: AD_IDS.interstitial }).catch(()=>{});
     AdMob.prepareRewardVideoAd({ adId: AD_IDS.rewarded }).catch(()=>{});
-  }catch(e){ /* ads unavailable this session — game plays fine without them */ }
+  }catch(e){
+    adsDebugTrail.push('initAds() aborted: ' + (e && e.message ? e.message : JSON.stringify(e)));
+  }
 }
 async function showBannerAd(){
   if(state.adsRemoved || !adsCanRequest) return;
@@ -1558,6 +1577,12 @@ function getAdDebugInfo(){
   if(adsInitialized && !adsCanRequest){
     lines.push('--> Consent flow ran but did NOT grant ad permission.');
     lines.push('    This is why nothing shows: Google blocks all ad requests until consent is granted.');
+  }
+  lines.push('--- consent flow trail ---');
+  if(adsDebugTrail.length===0){
+    lines.push('(empty — initAds() has not run yet, give it a second and check again)');
+  } else {
+    adsDebugTrail.forEach(l => lines.push(l));
   }
   return lines.join('\n');
 }
